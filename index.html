@@ -1,0 +1,853 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>How Our Disaggregated Storage Engine Works -- Interactive Explainer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #070A12;
+      --bg-card: #0F172A;
+      --bg-card-hover: #162036;
+      --bg-panel: #1E293B;
+      --border-color: rgba(255, 255, 255, 0.08);
+      --border-focus: rgba(6, 182, 212, 0.4);
+      --memtable-color: #06B6D4;
+      --memtable-glow: rgba(6, 182, 212, 0.25);
+      --cache-color: #10B981;
+      --cache-glow: rgba(16, 185, 129, 0.25);
+      --objectstore-color: #8B5CF6;
+      --objectstore-glow: rgba(139, 92, 246, 0.25);
+      --amber-color: #F59E0B;
+      --amber-glow: rgba(245, 158, 11, 0.25);
+      --danger-color: #EF4444;
+      --danger-glow: rgba(239, 68, 68, 0.3);
+      --text-main: #F8FAFC;
+      --text-muted: #94A3B8;
+      --text-dim: #64748B;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background-color: var(--bg-dark); color: var(--text-main); font-family: var(--font-sans); line-height: 1.6; -webkit-font-smoothing: antialiased; padding-bottom: 80px; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+    header { padding: 60px 0 40px; border-bottom: 1px solid var(--border-color); margin-bottom: 60px; }
+    h1 { font-size: clamp(2rem, 5vw, 3.5rem); font-weight: 800; letter-spacing: -0.03em; background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.6) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; margin-bottom: 16px; }
+    .subtitle { font-size: 1.15rem; color: var(--text-muted); max-width: 680px; line-height: 1.7; }
+    .badge { display: inline-flex; align-items: center; gap: 8px; background: rgba(6,182,212,0.1); border: 1px solid rgba(6,182,212,0.25); color: var(--memtable-color); padding: 6px 14px; border-radius: 20px; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 24px; font-family: var(--font-mono); }
+    .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--memtable-color); animation: pulse 2s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(0.8)} }
+    .prose-section { margin-bottom: 40px; }
+    .prose-tag { font-family: var(--font-mono); font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--memtable-color); margin-bottom: 10px; }
+    .prose-title { font-size: 1.4rem; font-weight: 700; color: var(--text-main); margin-bottom: 12px; letter-spacing: -0.01em; }
+    .prose-body { color: #CBD5E1; font-size: 1.05rem; line-height: 1.7; }
+    .prose-body p { margin-bottom: 12px; }
+    .prose-body p:last-child { margin-bottom: 0; }
+    .interactive-workspace { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 20px; padding: 28px; margin: 40px 0; box-shadow: 0 20px 40px rgba(0,0,0,0.4); }
+    .workspace-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; margin-bottom: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--border-color); }
+    .workspace-title { display: flex; align-items: center; gap: 12px; font-size: 1.25rem; font-weight: 700; }
+    .live-indicator { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 0.75rem; color: var(--cache-color); background: rgba(16,185,129,0.1); padding: 4px 10px; border-radius: 20px; border: 1px solid rgba(16,185,129,0.2); }
+    .metrics-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 28px; }
+    .metric-card { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 12px; padding: 16px; }
+    .metric-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); margin-bottom: 6px; }
+    .metric-value { font-family: var(--font-mono); font-size: 1.25rem; font-weight: 700; color: var(--text-main); }
+    .metric-unit { font-size: 0.8rem; color: var(--text-muted); font-weight: 400; }
+    .controls-panel { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; margin-bottom: 28px; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 16px; padding: 20px; position: relative; z-index: 10; }
+    .control-group { display: flex; flex-direction: column; gap: 10px; }
+    .control-label { font-size: 0.85rem; font-weight: 600; color: var(--text-muted); display: flex; justify-content: space-between; align-items: center; }
+    .form-row { display: flex; gap: 8px; }
+    input[type="text"] { background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 14px; color: var(--text-main); font-family: var(--font-mono); font-size: 0.9rem; flex: 1; outline: none; transition: border-color 0.2s ease; }
+    input[type="text"]:focus { border-color: var(--memtable-color); box-shadow: 0 0 0 2px rgba(6,182,212,0.15); }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 18px; border-radius: 8px; font-size: 0.9rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s ease; white-space: nowrap; user-select: none; font-family: var(--font-sans); position: relative; z-index: 20; }
+    .btn-primary { background: linear-gradient(135deg, var(--memtable-color) 0%, #0891B2 100%); color: #000; box-shadow: 0 4px 14px var(--memtable-glow); }
+    .btn-primary:hover { filter: brightness(1.15); transform: translateY(-1px); }
+    .btn-primary:active { transform: translateY(0); filter: brightness(0.95); }
+    .btn-read { background: linear-gradient(135deg, var(--amber-color) 0%, #D97706 100%); color: #000; box-shadow: 0 4px 14px var(--amber-glow); }
+    .btn-read:hover { filter: brightness(1.15); transform: translateY(-1px); }
+    .btn-read:active { transform: translateY(0); }
+    .btn-secondary { background: rgba(255,255,255,0.06); color: var(--text-main); border: 1px solid var(--border-color); }
+    .btn-secondary:hover { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.2); }
+    .btn-danger { background: linear-gradient(135deg, var(--danger-color) 0%, #DC2626 100%); color: #FFF; box-shadow: 0 4px 14px var(--danger-glow); }
+    .btn-danger:hover { filter: brightness(1.15); transform: translateY(-1px); }
+    .presets-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .btn-chip { background: rgba(255,255,255,0.04); border: 1px solid var(--border-color); color: var(--text-muted); padding: 4px 10px; border-radius: 6px; font-family: var(--font-mono); font-size: 0.75rem; cursor: pointer; transition: all 0.2s ease; position: relative; z-index: 20; }
+    .btn-chip:hover { border-color: var(--memtable-color); color: var(--memtable-color); background: rgba(6,182,212,0.08); }
+    .stage-container { position: relative; background: #090E1A; border: 1px solid var(--border-color); border-radius: 16px; overflow: hidden; margin-bottom: 28px; height: 480px; }
+    canvas { display: block; width: 100%; height: 100%; position: relative; z-index: 1; }
+    .log-panel { background: #050811; border: 1px solid var(--border-color); border-radius: 16px; padding: 20px; font-family: var(--font-mono); }
+    .log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color); }
+    .log-title { font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); }
+    .log-stream { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+    .log-stream::-webkit-scrollbar { width: 4px; }
+    .log-stream::-webkit-scrollbar-track { background: transparent; }
+    .log-stream::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+    .log-entry { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 10px 14px; font-size: 0.8rem; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    .log-entry.evt-Write { border-left: 3px solid var(--memtable-color); }
+    .log-entry.evt-Flush { border-left: 3px solid var(--objectstore-color); }
+    .log-entry.evt-Compact { border-left: 3px solid var(--cache-color); }
+    .log-entry.evt-Read { border-left: 3px solid var(--amber-color); }
+    .log-entry.evt-Crash { border-left: 3px solid var(--danger-color); }
+    .log-badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 4px; background: rgba(255,255,255,0.07); color: var(--text-muted); white-space: nowrap; }
+    .log-latency { font-size: 0.75rem; color: var(--amber-color); white-space: nowrap; }
+    .type-flush .prose-tag { color: var(--objectstore-color); }
+    .type-read .prose-tag { color: var(--amber-color); }
+    .type-compact .prose-tag { color: var(--cache-color); }
+    .type-crash .prose-tag { color: var(--danger-color); }
+    footer { margin-top: 80px; padding: 32px 0; border-top: 1px solid var(--border-color); text-align: center; color: var(--text-dim); font-size: 0.85rem; }
+    code { font-family: var(--font-mono); background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="container">
+      <div class="badge">
+        <div class="badge-dot"></div>
+        Disaggregated Storage Engine Architecture
+      </div>
+      <h1>How Our Disaggregated Storage Engine Works</h1>
+      <p class="subtitle">An interactive, latency-correct simulation of LSM-tree memory buffering, cloud object store flushes, multi-tier reads, and zero-data-loss node recovery.</p>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <article class="prose-section">
+      <div class="prose-tag">01. Architectural Fundamentals</div>
+      <h2 class="prose-title">The Disaggregated Storage Revolution</h2>
+      <div class="prose-body">
+        <p>Traditional databases couple compute and storage onto the same machine, forcing expensive over-provisioning. This system takes a different approach: it decouples compute nodes from durable storage entirely, utilizing cloud object stores (like AWS S3) as the primary persistence tier.</p>
+        <p>However, S3 brings a challenge: network round-trips take ~50â€“150ms per request. To achieve sub-millisecond database writes and reads, our storage engine employs an in-memory <strong>Memtable</strong> write-buffer paired with a local SSD read-cache.</p>
+      </div>
+    </article>
+
+    <!-- Interactive Simulation Widget -->
+    <section class="interactive-workspace">
+
+      <div class="workspace-header">
+        <div class="workspace-title">
+          <span>&#9889; Live Storage Engine Simulation</span>
+          <div class="live-indicator" id="live-indicator">
+            <span class="badge-dot" style="width:6px;height:6px;"></span> JS Engine Ready
+          </div>
+        </div>
+        <div style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);">
+          Memtable Threshold: <strong style="color:var(--memtable-color);">4 keys</strong>
+        </div>
+      </div>
+
+      <!-- Metric Counters -->
+      <div class="metrics-bar">
+        <div class="metric-card">
+          <div class="metric-label">RAM Memtable</div>
+          <div class="metric-value" id="metric-memtable">0 <span class="metric-unit">/ 4 keys</span></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Local SSD Cache</div>
+          <div class="metric-value" id="metric-cache">0 <span class="metric-unit">cached SSTs</span></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Object Store (S3)</div>
+          <div class="metric-value" id="metric-objectstore">0 <span class="metric-unit">files (0 B)</span></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Last Served Read</div>
+          <div class="metric-value" id="metric-last-hit" style="color:var(--amber-color);">&#8212;</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Logged Latency</div>
+          <div class="metric-value" id="metric-latency" style="color:var(--amber-color);">0.000 <span class="metric-unit">ms</span></div>
+        </div>
+      </div>
+
+      <!-- Controls Panel -->
+      <div class="controls-panel">
+
+        <!-- Write -->
+        <div class="control-group">
+          <div class="control-label">
+            <span>Write Key-Value</span>
+            <span style="font-size:0.75rem;color:var(--memtable-color);">RAM ~100ns</span>
+          </div>
+          <div class="form-row">
+            <div style="flex:1;display:flex;flex-direction:column;gap:4px;">
+              <span style="font-size:0.7rem;color:var(--text-dim);font-family:var(--font-mono);">KEY:</span>
+              <input type="text" id="write-key" placeholder="e.g. user:200" value="user:200">
+            </div>
+            <div style="flex:1;display:flex;flex-direction:column;gap:4px;">
+              <span style="font-size:0.7rem;color:var(--text-dim);font-family:var(--font-mono);">VALUE:</span>
+              <input type="text" id="write-val" placeholder="e.g. Zara" value="Zara">
+            </div>
+            <div style="display:flex;align-items:flex-end;">
+              <button class="btn btn-primary" onclick="doWrite()">&#9889; Write</button>
+            </div>
+          </div>
+          <div class="presets-row">
+            <span style="font-size:0.75rem;color:var(--text-dim);align-self:center;">Fill to Flush:</span>
+            <button class="btn-chip" onclick="quickWrite('user:101','Alice')">+ user:101</button>
+            <button class="btn-chip" onclick="quickWrite('user:102','Bob')">+ user:102</button>
+            <button class="btn-chip" onclick="quickWrite('user:103','Charlie')">+ user:103</button>
+            <button class="btn-chip" onclick="quickWrite('user:104','Dave')">+ user:104 &#9889;</button>
+          </div>
+        </div>
+
+        <!-- Read -->
+        <div class="control-group">
+          <div class="control-label">
+            <span>Read Hierarchy Lookup</span>
+            <span style="font-size:0.75rem;color:var(--amber-color);">Probe Mem &#8594; SSD &#8594; S3</span>
+          </div>
+          <div class="form-row">
+            <div style="flex:1;display:flex;flex-direction:column;gap:4px;">
+              <span style="font-size:0.7rem;color:var(--text-dim);font-family:var(--font-mono);">LOOKUP KEY:</span>
+              <input type="text" id="read-key" placeholder="Key to read" value="user:200">
+            </div>
+            <div style="display:flex;align-items:flex-end;">
+              <button class="btn btn-read" onclick="doRead()">&#128269; Read Key</button>
+            </div>
+          </div>
+          <div class="presets-row">
+            <span style="font-size:0.75rem;color:var(--text-dim);align-self:center;">Quick Read:</span>
+            <button class="btn-chip" onclick="quickRead('user:200')">user:200</button>
+            <button class="btn-chip" onclick="quickRead('user:101')">user:101</button>
+            <button class="btn-chip" onclick="quickRead('missing:key')">missing:key</button>
+          </div>
+        </div>
+
+        <!-- Engine Ops -->
+        <div class="control-group" style="grid-column:1/-1;">
+          <div class="control-label">
+            <span>Storage Maintenance &amp; Disaster Simulation</span>
+          </div>
+          <div class="form-row" style="flex-wrap:wrap;">
+            <button class="btn btn-secondary" onclick="doFlush()">&#128230; Force Flush to S3</button>
+            <button class="btn btn-secondary" onclick="doCompact()">&#128457; Force Compaction (L0 &#8594; L1)</button>
+            <button class="btn btn-danger" onclick="doCrash()">&#128165; Simulate Node Crash</button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Canvas Stage -->
+      <div class="stage-container">
+        <canvas id="simCanvas"></canvas>
+      </div>
+
+      <!-- Event Log -->
+      <div class="log-panel">
+        <div class="log-header">
+          <div class="log-title">Event Execution Log</div>
+          <div style="font-size:0.75rem;color:var(--text-dim);" id="log-count">0 events</div>
+        </div>
+        <div class="log-stream" id="log-stream"></div>
+      </div>
+
+    </section>
+
+    <article class="prose-section">
+      <div class="prose-tag">02. The Write Path</div>
+      <h2 class="prose-title">Memtable Buffering: Turning Random Writes into Sequential I/O</h2>
+      <div class="prose-body">
+        <p>When an application writes to the system, the record lands in an in-memory <strong>Memtable</strong> sorted by key (implemented as a JavaScript <code>Map</code>, analogous to Rust's <code>BTreeMap</code>). Because RAM access takes ~100 nanoseconds, write operations respond instantaneously.</p>
+        <p>Buffering writes in memory serves a critical architectural purpose: instead of issuing thousands of slow, random I/O requests to cloud storage, the engine accumulates writes in memory until a threshold is crossed (set to 4 keys in this demo), converting random writes into bulk sequential files.</p>
+      </div>
+    </article>
+
+    <article class="prose-section type-flush">
+      <div class="prose-tag">03. Cloud Persistence</div>
+      <h2 class="prose-title">Flushing: Creating Immutable SSTables in Object Storage</h2>
+      <div class="prose-body">
+        <p>When the Memtable reaches capacity, a background worker triggers a <strong>Flush</strong>. The contents of the Memtable are serialized into a binary, sorted string table (SSTable) and uploaded to the mock Object Store (S3).</p>
+        <p>These flushed files are strictly <strong>immutable</strong>. Once written to object storage, they are never modified in place. To ensure fast subsequent access, the newly written SSTable is also populated into the node's local SSD cache. Once durable in S3, the RAM Memtable is safely cleared to receive new writes.</p>
+      </div>
+    </article>
+
+    <article class="prose-section type-read">
+      <div class="prose-tag">04. The Read Path</div>
+      <h2 class="prose-title">Multi-Tier Read Hierarchy: 100ns RAM to 100ms Cloud</h2>
+      <div class="prose-body">
+        <p>Point lookups traverse a strict 3-tier hierarchy: first checking <strong>Memtable</strong> (~100ns), then <strong>Local SSD Cache</strong> (~0.5ms), and finally fetching from the <strong>Object Store</strong> (~95ms) over simulated network HTTP.</p>
+        <p>Try reading a key after writing it: if it's still in RAM, latency is ~100ns. After a flush, it hits the local SSD cache (~0.5ms). If the local cache is cold or cleared, the probe fetches directly from S3 (~95ms) and lazily caches the SSTable for future queries.</p>
+      </div>
+    </article>
+
+    <article class="prose-section type-compact">
+      <div class="prose-tag">05. Storage Optimization</div>
+      <h2 class="prose-title">Compaction: Bounding Read Amplification &amp; Reclaiming Space</h2>
+      <div class="prose-body">
+        <p>As flushes recur, multiple Level 0 SSTables accumulate in Object Storage. Searching across dozens of files increases read amplification. Furthermore, overwrites or deletes leave obsolete key versions occupying paid storage.</p>
+        <p>Periodically, background <strong>Compaction</strong> merges multiple Level 0 files into a single Level 1 file. During compaction, key versions are deduplicated (keeping only the newest), reclaiming cloud disk space and bounding read latency.</p>
+      </div>
+    </article>
+
+    <article class="prose-section type-crash">
+      <div class="prose-tag">06. Production Architecture</div>
+      <h2 class="prose-title">Stateless Recovery: Disaggregated Engines in Production</h2>
+      <div class="prose-body">
+        <p>In a disaggregated storage engine like this one, compute data-nodes maintain no state that isn't durable in object storage. Click the <strong>Simulate Node Crash</strong> button above to observe this resilience in action.</p>
+        <p>When a node crashes, all RAM Memtables and local SSD caches are wiped out. However, because every flushed SSTable lives durably in S3, the new replacement node boots up immediately, serving reads directly from object storage while lazily rebuilding its local SSD cache â€” achieving zero data loss and instant cloud recovery.</p>
+      </div>
+    </article>
+
+  </main>
+
+  <footer>
+    <div class="container">
+      <p>Disaggregated Storage Engine Explainer &bull; Pure JavaScript simulation &bull; Latency-accurate event-driven engine</p>
+    </div>
+  </footer>
+
+  <script>
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // STORAGE ENGINE  (pure JS, identical logic to the Rust WASM version)
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    var MEMTABLE_THRESHOLD = 4;
+    var LATENCY_WRITE_NS  = 0.0001;   // 100 ns  â†’ 0.0001 ms
+    var LATENCY_CACHE_MS  = 0.5;
+    var LATENCY_S3_MS     = 95.0;
+    var fileCounter = 0;
+    var seqNum = 0;
+
+    // State
+    var memtable    = {};   // key -> {value, seq}
+    var memCount    = 0;
+    var objectStore = [];   // [{id, level, entries:[{key,value,seq}], sizeBytes}]
+    var localCache  = {};   // fileId -> true
+    var eventLog    = [];
+
+    function engineWrite(key, value) {
+      var events = [];
+      seqNum++;
+      memtable[key] = { value: value, seq: seqNum };
+      memCount = Object.keys(memtable).length;
+      events.push({
+        event_type: 'Write',
+        key: key,
+        details: 'Wrote "' + key + '" = "' + value + '" to Memtable (seq=' + seqNum + ')',
+        hit_layer: 'Memtable',
+        latency_ms: LATENCY_WRITE_NS,
+        state: snapshot()
+      });
+      if (memCount >= MEMTABLE_THRESHOLD) {
+        var fe = doFlushInternal();
+        if (fe) events.push(fe);
+      }
+      return events;
+    }
+
+    function doFlushInternal() {
+      if (memCount === 0) return null;
+      fileCounter++;
+      var id = 'sst-' + fileCounter;
+      var entries = Object.keys(memtable).sort().map(function(k) {
+        return { key: k, value: memtable[k].value, seq: memtable[k].seq };
+      });
+      var sizeBytes = entries.reduce(function(s, e) { return s + e.key.length + e.value.length + 8; }, 0);
+      objectStore.push({ id: id, level: 0, entries: entries, sizeBytes: sizeBytes });
+      localCache[id] = true;
+      memtable = {};
+      memCount = 0;
+      var evt = {
+        event_type: 'Flush',
+        key: '',
+        details: 'Flushed ' + entries.length + ' key(s) to ' + id + ' (' + sizeBytes + ' B) â†’ Object Store. Memtable cleared.',
+        hit_layer: 'ObjectStore',
+        latency_ms: LATENCY_S3_MS,
+        state: snapshot()
+      };
+      return evt;
+    }
+
+    function engineFlush() {
+      var e = doFlushInternal();
+      if (!e) {
+        return {
+          event_type: 'Flush',
+          key: '',
+          details: 'Flush skipped â€” Memtable is empty.',
+          hit_layer: null,
+          latency_ms: 0,
+          state: snapshot()
+        };
+      }
+      return e;
+    }
+
+    function engineCompact() {
+      var l0 = objectStore.filter(function(f) { return f.level === 0; });
+      if (l0.length < 2) {
+        return {
+          event_type: 'Compact',
+          key: '',
+          details: 'Compaction skipped â€” need at least 2 L0 files (have ' + l0.length + ').',
+          hit_layer: null,
+          latency_ms: 0,
+          state: snapshot()
+        };
+      }
+      // Merge: collect all entries, deduplicate keeping highest seq
+      var merged = {};
+      l0.forEach(function(f) {
+        f.entries.forEach(function(e) {
+          if (!merged[e.key] || merged[e.key].seq < e.seq) {
+            merged[e.key] = { value: e.value, seq: e.seq };
+          }
+        });
+      });
+      var entries = Object.keys(merged).sort().map(function(k) {
+        return { key: k, value: merged[k].value, seq: merged[k].seq };
+      });
+      fileCounter++;
+      var newId = 'sst-' + fileCounter;
+      var sizeBytes = entries.reduce(function(s, e) { return s + e.key.length + e.value.length + 8; }, 0);
+      // Remove old L0 files from cache
+      l0.forEach(function(f) { delete localCache[f.id]; });
+      // Remove L0 files from store
+      objectStore = objectStore.filter(function(f) { return f.level !== 0; });
+      // Add new L1 file
+      objectStore.push({ id: newId, level: 1, entries: entries, sizeBytes: sizeBytes });
+      localCache[newId] = true;
+      return {
+        event_type: 'Compact',
+        key: '',
+        details: 'Compacted ' + l0.length + ' L0 files into ' + newId + ' (L1, ' + entries.length + ' keys, ' + sizeBytes + ' B). Duplicates removed.',
+        hit_layer: null,
+        latency_ms: 0,
+        state: snapshot()
+      };
+    }
+
+    function engineRead(key) {
+      // 1. Check memtable
+      if (memtable[key] !== undefined) {
+        return {
+          event_type: 'Read',
+          key: key,
+          details: 'READ "' + key + '" \u2192 "' + memtable[key].value + '" (Memtable hit)',
+          hit_layer: 'Memtable',
+          latency_ms: LATENCY_WRITE_NS,
+          state: snapshot()
+        };
+      }
+      // 2. Check local cache (scan files newest-first)
+      var cachedFiles = objectStore.filter(function(f) { return localCache[f.id]; });
+      for (var i = cachedFiles.length - 1; i >= 0; i--) {
+        var f = cachedFiles[i];
+        for (var j = 0; j < f.entries.length; j++) {
+          if (f.entries[j].key === key) {
+            return {
+              event_type: 'Read',
+              key: key,
+              details: 'READ "' + key + '" \u2192 "' + f.entries[j].value + '" (Local SSD Cache, file ' + f.id + ')',
+              hit_layer: 'LocalCache',
+              latency_ms: LATENCY_CACHE_MS,
+              state: snapshot()
+            };
+          }
+        }
+      }
+      // 3. Check object store (cold files)
+      var coldFiles = objectStore.filter(function(f) { return !localCache[f.id]; });
+      for (var i = coldFiles.length - 1; i >= 0; i--) {
+        var f = coldFiles[i];
+        for (var j = 0; j < f.entries.length; j++) {
+          if (f.entries[j].key === key) {
+            localCache[f.id] = true; // lazy cache
+            return {
+              event_type: 'Read',
+              key: key,
+              details: 'READ "' + key + '" \u2192 "' + f.entries[j].value + '" (Object Store fetch, file ' + f.id + '). SSTable lazily cached to SSD.',
+              hit_layer: 'ObjectStore',
+              latency_ms: LATENCY_S3_MS,
+              state: snapshot()
+            };
+          }
+        }
+      }
+      return {
+        event_type: 'Read',
+        key: key,
+        details: 'READ "' + key + '" \u2192 NOT FOUND (searched Memtable + ' + objectStore.length + ' SSTable files)',
+        hit_layer: 'None',
+        latency_ms: LATENCY_S3_MS,
+        state: snapshot()
+      };
+    }
+
+    function engineCrash() {
+      memtable = {};
+      memCount = 0;
+      localCache = {};
+      return {
+        event_type: 'Crash',
+        key: '',
+        details: 'NODE CRASH SIMULATED. RAM Memtable wiped (' + memCount + ' keys lost). Local SSD cache wiped. Object Store data INTACT (' + objectStore.length + ' files durable in S3).',
+        hit_layer: null,
+        latency_ms: 0,
+        state: snapshot()
+      };
+    }
+
+    function snapshot() {
+      return {
+        memtable_count: Object.keys(memtable).length,
+        object_store_files: objectStore.length,
+        cache_count: Object.keys(localCache).length,
+        total_bytes: objectStore.reduce(function(s, f) { return s + f.sizeBytes; }, 0)
+      };
+    }
+
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // CANVAS RENDERER
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    var canvas, ctx, W, H, dpr;
+    var activeProbe = null;
+    var crashPulse  = 0;
+
+    function initCanvas() {
+      canvas = document.getElementById('simCanvas');
+      ctx = canvas.getContext('2d');
+      dpr = window.devicePixelRatio || 1;
+      W = canvas.parentElement.offsetWidth || 800;
+      H = 480;
+      canvas.width  = W * dpr;
+      canvas.height = H * dpr;
+      canvas.style.width  = '100%';
+      canvas.style.height = H + 'px';
+      ctx.scale(dpr, dpr);
+      requestAnimationFrame(renderLoop);
+    }
+
+    var COLORS = {
+      memtable:    '#06B6D4',
+      cache:       '#10B981',
+      objectstore: '#8B5CF6',
+      amber:       '#F59E0B',
+      danger:      '#EF4444',
+      panel:       '#1E293B',
+      border:      'rgba(255,255,255,0.08)',
+      text:        '#F8FAFC',
+      muted:       '#64748B'
+    };
+
+    function renderLoop() {
+      ctx.clearRect(0, 0, W, H);
+
+      var state = snapshot();
+
+      // Background
+      ctx.fillStyle = '#090E1A';
+      ctx.fillRect(0, 0, W, H);
+
+      // â”€â”€ Draw 3 tier boxes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      var boxW   = Math.min(300, (W - 80) / 3);
+      var startX = (W - (3 * boxW + 2 * 30)) / 2;
+
+      // Box 1: Memtable (RAM)
+      drawTierBox(startX, 40, boxW, 160, COLORS.memtable, 'RAM Memtable',
+        Object.keys(memtable).length + ' / 4 keys',
+        Object.keys(memtable).slice(0, 6));
+
+      // Box 2: Local SSD Cache
+      var cachedIds = Object.keys(localCache);
+      drawTierBox(startX + boxW + 30, 40, boxW, 160, COLORS.cache, 'Local SSD Cache',
+        cachedIds.length + ' SSTable(s)',
+        cachedIds.slice(0, 4));
+
+      // Box 3: Object Store
+      var osIds = objectStore.map(function(f) { return f.id + ' (L' + f.level + ')'; });
+      drawTierBox(startX + 2 * (boxW + 30), 40, boxW, 160, COLORS.objectstore, 'Object Store (S3)',
+        objectStore.length + ' files',
+        osIds.slice(0, 4));
+
+      // â”€â”€ Flow arrows between boxes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      var y_mid = 40 + 80;
+      drawArrow(startX + boxW, y_mid, startX + boxW + 30, y_mid, COLORS.memtable, 'FLUSH');
+      drawArrow(startX + 2 * boxW + 30, y_mid, startX + 2 * (boxW + 30), y_mid, COLORS.cache, 'CACHE');
+
+      // â”€â”€ Read probe animation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      if (activeProbe) {
+        var now = performance.now();
+        var elapsed = now - activeProbe.startTime;
+        var t = Math.min(elapsed / activeProbe.duration, 1);
+        t = 1 - Math.pow(1 - t, 3); // ease-out cubic
+
+        // Determine target X center for the hit layer
+        var targetX;
+        if (activeProbe.hitLayer === 'Memtable') targetX = startX + boxW / 2;
+        else if (activeProbe.hitLayer === 'LocalCache') targetX = startX + boxW + 30 + boxW / 2;
+        else targetX = startX + 2 * (boxW + 30) + boxW / 2;
+
+        var probeX = W / 2 + (targetX - W / 2) * t;
+        var probeY = 230 + 50 * t;
+
+        // Probe dot
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = COLORS.amber;
+        ctx.fillStyle = COLORS.amber;
+        ctx.beginPath();
+        ctx.arc(probeX, probeY, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Label
+        ctx.fillStyle = '#FFF';
+        ctx.font = '600 12px "JetBrains Mono", monospace';
+        ctx.textAlign = 'center';
+        var latText = activeProbe.latencyMs < 0.01
+          ? (activeProbe.latencyMs * 1000000).toFixed(0) + ' ns'
+          : activeProbe.latencyMs.toFixed(2) + ' ms';
+        ctx.fillText("READ '" + activeProbe.key + "' \u2192 " + (activeProbe.hitLayer || '...') + '  (' + latText + ')', probeX, probeY - 16);
+        ctx.textAlign = 'left';
+
+        if (t >= 1) activeProbe = null;
+      }
+
+      // â”€â”€ Crash flash â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      if (crashPulse > 0) {
+        ctx.fillStyle = 'rgba(239,68,68,' + (crashPulse * 0.3) + ')';
+        ctx.fillRect(0, 0, W, H);
+        crashPulse -= 0.02;
+      }
+
+      // â”€â”€ Legend at bottom â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      var legendY = H - 24;
+      var legends = [
+        {color: COLORS.memtable, label: 'Memtable Write  ~100ns'},
+        {color: COLORS.cache,    label: 'SSD Cache Hit  ~0.5ms'},
+        {color: COLORS.objectstore, label: 'S3 Fetch  ~95ms'},
+        {color: COLORS.amber,    label: 'Read Probe'},
+      ];
+      var lx = 20;
+      ctx.font = '500 11px "JetBrains Mono", monospace';
+      legends.forEach(function(l) {
+        ctx.fillStyle = l.color;
+        ctx.fillRect(lx, legendY - 7, 10, 10);
+        ctx.fillStyle = COLORS.muted;
+        ctx.fillText(l.label, lx + 14, legendY + 2);
+        lx += ctx.measureText(l.label).width + 30;
+      });
+
+      requestAnimationFrame(renderLoop);
+    }
+
+    function drawTierBox(x, y, w, h, color, title, subtitle, items) {
+      // Outer glow
+      ctx.shadowBlur = 16;
+      ctx.shadowColor = color + '55';
+      ctx.fillStyle = '#0F172A';
+      ctx.strokeStyle = color + '66';
+      ctx.lineWidth = 1.5;
+      roundRect(x, y, w, h, 12);
+      ctx.fill();
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Color bar top
+      ctx.fillStyle = color + '33';
+      roundRectTop(x, y, w, 36, 12);
+      ctx.fill();
+
+      // Title
+      ctx.fillStyle = color;
+      ctx.font = '700 12px "JetBrains Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(title, x + w / 2, y + 22);
+
+      // Subtitle
+      ctx.fillStyle = '#94A3B8';
+      ctx.font = '500 11px "JetBrains Mono", monospace';
+      ctx.fillText(subtitle, x + w / 2, y + 54);
+
+      // Items
+      ctx.font = '400 10px "JetBrains Mono", monospace';
+      items.forEach(function(item, i) {
+        ctx.fillStyle = color + 'CC';
+        ctx.fillText(item, x + w / 2, y + 75 + i * 16);
+      });
+
+      ctx.textAlign = 'left';
+    }
+
+    function drawArrow(x1, y1, x2, y2, color, label) {
+      ctx.strokeStyle = color + '88';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Arrowhead
+      ctx.fillStyle = color + '88';
+      ctx.beginPath();
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(x2 - 6, y2 - 4);
+      ctx.lineTo(x2 - 6, y2 + 4);
+      ctx.closePath();
+      ctx.fill();
+      // Label
+      ctx.fillStyle = color + 'AA';
+      ctx.font = '600 9px "JetBrains Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(label, (x1 + x2) / 2, y1 - 6);
+      ctx.textAlign = 'left';
+    }
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    }
+
+    function roundRectTop(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h);
+      ctx.lineTo(x, y + h);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    }
+
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // UI UPDATE
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    function updateUI(state) {
+      document.getElementById('metric-memtable').innerHTML =
+        state.memtable_count + ' <span class="metric-unit">/ 4 keys</span>';
+      document.getElementById('metric-cache').innerHTML =
+        state.cache_count + ' <span class="metric-unit">cached SSTs</span>';
+      var totalKB = (state.total_bytes / 1024).toFixed(1);
+      document.getElementById('metric-objectstore').innerHTML =
+        state.object_store_files + ' <span class="metric-unit">files (' + totalKB + ' KB)</span>';
+    }
+
+    function addLogEntry(evt) {
+      var stream = document.getElementById('log-stream');
+      var entry = document.createElement('div');
+      entry.className = 'log-entry evt-' + evt.event_type;
+
+      var badge = evt.hit_layer ? '<span class="log-badge">' + evt.hit_layer + '</span>' : '';
+      var latMs = evt.latency_ms;
+      var latText = '';
+      if (latMs !== undefined && latMs > 0) {
+        if (latMs < 0.01) {
+          latText = '<span class="log-latency">' + (latMs * 1000000).toFixed(0) + ' ns</span>';
+        } else {
+          latText = '<span class="log-latency">' + latMs.toFixed(3) + ' ms</span>';
+        }
+      }
+
+      entry.innerHTML =
+        '<div><strong>[' + evt.event_type + ']</strong> ' + evt.details + '</div>' +
+        '<div style="display:flex;gap:8px;align-items:center;">' + badge + latText + '</div>';
+
+      stream.insertBefore(entry, stream.firstChild);
+
+      var count = stream.children.length;
+      document.getElementById('log-count').textContent = count + ' event' + (count !== 1 ? 's' : '');
+
+      // Update last hit metrics
+      if (evt.event_type === 'Read' && evt.hit_layer) {
+        document.getElementById('metric-last-hit').textContent = evt.hit_layer;
+        if (latMs < 0.01) {
+          document.getElementById('metric-latency').innerHTML =
+            (latMs * 1000000).toFixed(0) + ' <span class="metric-unit">ns</span>';
+        } else {
+          document.getElementById('metric-latency').innerHTML =
+            latMs.toFixed(3) + ' <span class="metric-unit">ms</span>';
+        }
+        // Trigger read probe animation
+        activeProbe = {
+          key: evt.key,
+          hitLayer: evt.hit_layer,
+          latencyMs: evt.latency_ms,
+          startTime: performance.now(),
+          duration: latMs > 50 ? 1600 : latMs > 0.1 ? 700 : 350
+        };
+      }
+    }
+
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // BUTTON HANDLERS  (global functions, called by onclick=)
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    function doWrite() {
+      var k = document.getElementById('write-key').value.trim();
+      var v = document.getElementById('write-val').value.trim();
+      if (!k || !v) { alert('Please enter both a key and a value.'); return; }
+      var events = engineWrite(k, v);
+      events.forEach(function(e) { addLogEntry(e); });
+      updateUI(events[events.length - 1].state);
+    }
+
+    function doRead() {
+      var k = document.getElementById('read-key').value.trim();
+      if (!k) { alert('Please enter a key to read.'); return; }
+      var evt = engineRead(k);
+      addLogEntry(evt);
+      updateUI(evt.state);
+    }
+
+    function doFlush() {
+      var evt = engineFlush();
+      addLogEntry(evt);
+      updateUI(evt.state);
+    }
+
+    function doCompact() {
+      var evt = engineCompact();
+      addLogEntry(evt);
+      updateUI(evt.state);
+    }
+
+    function doCrash() {
+      var evt = engineCrash();
+      crashPulse = 1.0;
+      addLogEntry(evt);
+      updateUI(evt.state);
+    }
+
+    function quickWrite(k, v) {
+      document.getElementById('write-key').value = k;
+      document.getElementById('write-val').value = v;
+      doWrite();
+    }
+
+    function quickRead(k) {
+      document.getElementById('read-key').value = k;
+      doRead();
+    }
+
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // BOOT
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    window.onload = function() {
+      initCanvas();
+      updateUI(snapshot());
+    };
+  </script>
+
+</body>
+</html>
+
+
+
